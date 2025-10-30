@@ -22,6 +22,8 @@ interface User {
   lastSeen: number;
   cursorX?: number;
   cursorY?: number;
+  scrollTop?: number;
+  cursorInChat?: boolean;
 }
 
 // Generate random color for user
@@ -57,6 +59,7 @@ export default function Chat() {
     color: generateColor(),
     id: Math.random().toString(36).substring(7),
   }));
+  const [localScrollTop, setLocalScrollTop] = useState(0);
   
   // AI Assistant as a user
   const aiUser = {
@@ -70,6 +73,7 @@ export default function Chat() {
   const messagesArrayRef = useRef<Y.Array<any> | null>(null);
   const usersMapRef = useRef<Y.Map<any> | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     // Parse Y-Sweet URL
@@ -149,6 +153,8 @@ export default function Chat() {
         color: currentUser.color,
         typing: '',
         lastSeen: Date.now(),
+        scrollTop: messagesContainerRef.current?.scrollTop ?? 0,
+        cursorInChat: false,
       });
     };
 
@@ -180,11 +186,26 @@ export default function Chat() {
       
       const currentUserData = usersMapRef.current.get(currentUser.id);
       if (currentUserData) {
+        const container = messagesContainerRef.current;
+        const scrollTop = container?.scrollTop ?? 0;
+        let cursorInChat = false;
+
+        if (container) {
+          const rect = container.getBoundingClientRect();
+          cursorInChat =
+            e.clientX >= rect.left &&
+            e.clientX <= rect.right &&
+            e.clientY >= rect.top &&
+            e.clientY <= rect.bottom;
+        }
+
         // Update cursor position in Yjs
         usersMapRef.current.set(currentUser.id, {
           ...currentUserData,
           cursorX: e.clientX,
           cursorY: e.clientY,
+          scrollTop,
+          cursorInChat,
           lastSeen: Date.now(),
         });
       }
@@ -206,6 +227,46 @@ export default function Chat() {
     return () => {
       window.removeEventListener('mousemove', throttledMouseMove);
       if (throttleTimeout) clearTimeout(throttleTimeout);
+    };
+  }, [currentUser]);
+
+  useEffect(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+
+    let scrollAnimationFrame = 0;
+
+    const syncScroll = (nextScrollTop: number) => {
+      setLocalScrollTop(nextScrollTop);
+      if (!usersMapRef.current) return;
+      const currentUserData = usersMapRef.current.get(currentUser.id);
+      if (!currentUserData) return;
+
+      usersMapRef.current.set(currentUser.id, {
+        ...currentUserData,
+        scrollTop: nextScrollTop,
+        lastSeen: Date.now(),
+      });
+    };
+
+    const handleScroll = () => {
+      if (scrollAnimationFrame) return;
+      scrollAnimationFrame = window.requestAnimationFrame(() => {
+        scrollAnimationFrame = 0;
+        syncScroll(container.scrollTop);
+      });
+    };
+
+    // Initialize with current scroll
+    syncScroll(container.scrollTop);
+
+    container.addEventListener('scroll', handleScroll);
+
+    return () => {
+      container.removeEventListener('scroll', handleScroll);
+      if (scrollAnimationFrame) {
+        window.cancelAnimationFrame(scrollAnimationFrame);
+      }
     };
   }, [currentUser]);
 
@@ -312,6 +373,15 @@ export default function Chat() {
       {/* Other users' cursors */}
       {Array.from(cursors.entries()).map(([userId, user]) => {
         if (userId === currentUser.id) return null; // Don't show own cursor
+        if (user.cursorX === undefined || user.cursorY === undefined) return null;
+
+        const container = messagesContainerRef.current;
+        let adjustedY = user.cursorY;
+
+        if (container && user.cursorInChat) {
+          const scrollOffsetDiff = (user.scrollTop ?? 0) - localScrollTop;
+          adjustedY = user.cursorY + scrollOffsetDiff;
+        }
         
         return (
           <div
@@ -319,7 +389,7 @@ export default function Chat() {
             style={{
               position: 'fixed',
               left: user.cursorX,
-              top: user.cursorY,
+              top: adjustedY,
               pointerEvents: 'none',
               zIndex: 9999,
               transform: 'translate(-2px, -2px)',
@@ -493,7 +563,7 @@ export default function Chat() {
           display: 'flex',
           flexDirection: 'column',
           gap: '12px'
-        }}>
+        }} ref={messagesContainerRef}>
           {messages.length === 0 ? (
             <div style={{
               textAlign: 'center',
